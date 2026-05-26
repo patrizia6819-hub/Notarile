@@ -390,4 +390,415 @@ class AppNotarile(tk.Tk):
         
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute(\"\"\"\n                SELECT m.id, m.data_mov, m.tipo_movimento, m.repertorio, m.importo, m.modalita,\n                       m.cliente_libero, m.descrizione_libera, m.num_fattura,\n                       (SELECT group_concat(nome_cliente, ', ') FROM clienti WHERE repertorio=m.repertorio) as cl_rep,\n                       p.oggetto\n                FROM movimenti m\n                LEFT JOIN pratiche p ON m.repertorio = p.repertorio\n                ORDER BY m.id DESC\n            \"\"\")\n            \n            for row in cursor.fetchall():\n                mid, data, causale, rep, importo, modalita, cl_libero, desc_libera, fat_num, cl_rep, ogg_rep = row\n                \n                mostra_cliente = cl_libero if cl_libero else (cl_rep if cl_rep else \"-\")\n                mostra_desc = desc_libera if desc_libera else (f\"{ogg_rep} ({modalita})\" if ogg_rep else f\"Movimento ({modalita})\")\n                mostra_fattura = fat_num if fat_num else \"-\"\n                \n                cassa, banca_ord, banca_ded = \"\", \"\", \"\"\n                data_formattata = formatta_singola_data(data)\n                \n                if \"CASSA:\" in str(modalita):\n                    cassa = mostra_euro(importo)\n                elif \"B_DED:\" in str(modalita):\n                    banca_ded = mostra_euro(importo)\n                elif \"B_ORD:\" in str(modalita):\n                    banca_ord = mostra_euro(importo)\n                else:\n                    if str(modalita).upper() == \"CONTANTI\": cassa = mostra_euro(importo)\n                    elif str(causale).upper() == \"VERSAMENTO\": banca_ded = mostra_euro(importo)\n                    else: banca_ord = mostra_euro(importo)\n                    \n                self.tree_movimenti.insert(\"\", \"end\", values=(\n                    mid, data_formattata, mostra_cliente, causale, mostra_fattura, mostra_desc,\n                    rep if rep else \"-\", cassa, banca_ord, banca_ded\n                ))\n\n    def on_registro_select_row(self, event):\n        \"\"\"Gestisce la selezione di una riga nel registro\"\"\"\n        sel = self.tree_movimenti.selection()\n        if not sel: return\n        valori = self.tree_movimenti.item(sel[0])[\"values\"]\n        \n        self.id_movimento_selezionato_registro = valori[0]\n        \n        with sqlite3.connect(DB_FILE) as conn:\n            c = conn.cursor()\n            c.execute(\"SELECT data_mov, tipo_movimento, importo, repertorio, modalita, cliente_libero, descrizione_libera, num_fattura FROM movimenti WHERE id=?\", (self.id_movimento_selezionato_registro,))\n            res = c.fetchone()\n            if res:\n                self.reg_data.delete(0, tk.END)\n                self.reg_data.insert(0, formatta_singola_data(res[0]))\n                self.reg_causale.set(res[1])\n                \n                self.reg_rep.delete(0, tk.END)\n                self.reg_rep.insert(0, res[3] if res[3] else \"\")\n                \n                self.reg_cliente_libero.set(res[5] if res[5] else \"\")\n                \n                self.reg_desc_libera.delete(0, tk.END)\n                self.reg_desc_libera.insert(0, res[6] if res[6] else \"\")\n                \n                self.reg_num_fattura.delete(0, tk.END)\n                self.reg_num_fattura.insert(0, res[7] if res[7] else \"\")\n\n                self.reg_imp_cassa.delete(0, tk.END)\n                self.reg_imp_banca_ord.delete(0, tk.END)\n                self.reg_imp_banca_ded.delete(0, tk.END)\n                \n                mod_tag = str(res[4])\n                if \"CASSA:\" in mod_tag:\n                    self.reg_imp_cassa.insert(0, str(res[2]))\n                    self.reg_modalita.set(mod_tag.replace(\"CASSA:\", \"\"))\n                elif \"B_DED:\" in mod_tag:\n                    self.reg_imp_banca_ded.insert(0, str(res[2]))\n                    self.reg_modalita.set(mod_tag.replace(\"B_DED:\", \"\"))\n                elif \"B_ORD:\" in mod_tag:\n                    self.reg_imp_banca_ord.insert(0, str(res[2]))\n                    self.reg_modalita.set(mod_tag.replace(\"B_ORD:\", \"\"))\n                else:\n                    self.reg_imp_banca_ord.insert(0, str(res[2]))\n                    self.reg_modalita.set(mod_tag)\n\n        self.btn_mod_mov.config(state=\"normal\")\n        self.btn_del_mov.config(state=\"normal\")\n\n    def registro_pulisci_campi(self):\n        \"\"\"Pulisce i campi del registro movimento\"\"\"\n        self.id_movimento_selezionato_registro = None\n        self.reg_data.delete(0, tk.END)\n        self.reg_rep.delete(0, tk.END)\n        self.reg_imp_cassa.delete(0, tk.END)\n        self.reg_imp_banca_ord.delete(0, tk.END)\n        self.reg_imp_banca_ded.delete(0, tk.END)\n        self.reg_num_fattura.delete(0, tk.END)\n        self.reg_cliente_libero.set(\"\")\n        self.reg_desc_libera.delete(0, tk.END)\n        self.reg_causale.set(\"INCASSO\")\n        self.reg_modalita.set(\"BONIFICO\")\n        self.btn_mod_mov.config(state=\"disabled\")\n        self.btn_del_mov.config(state=\"disabled\")\n\n    def estrai_valore_e_tag_importo(self):\n        \"\"\"Estrae il valore importo e il tag corrispondente\"\"\"\n        v_cassa = formatta_singolo_importo(self.reg_imp_cassa.get().strip())\n        v_ord = formatta_singolo_importo(self.reg_imp_banca_ord.get().strip())\n        v_ded = formatta_singolo_importo(self.reg_imp_banca_ded.get().strip())\n        base_mod = self.reg_modalita.get().strip().upper()\n        \n        if v_cassa > 0: return v_cassa, f\"CASSA:{base_mod}\"\n        if v_ded > 0: return v_ded, f\"B_DED:{base_mod}\"\n        return v_ord, f\"B_ORD:{base_mod}\"\n\n    def registro_inserisci_nuovo(self):\n        \"\"\"Inserisce un nuovo movimento nel registro\"\"\"\n        data = formatta_singola_data(self.reg_data.get().strip())\n        rep = self.reg_rep.get().strip()\n        causale = self.reg_causale.get().strip().upper()\n        cli_libero = self.reg_cliente_libero.get().strip()\n        desc_libera = self.reg_desc_libera.get().strip()\n        fat_num = self.reg_num_fattura.get().strip()\n        \n        importo, tag_modalita = self.estrai_valore_e_tag_importo()\n        \n        if not data or importo <= 0:\n            messagebox.showerror(\"Errore\", \"Inserire la Data e almeno un Importo valido!\")\n            return\n            \n        with sqlite3.connect(DB_FILE) as conn:\n            cursor = conn.cursor()\n            cursor.execute(\"\"\"\n                INSERT INTO movimenti (repertorio, tipo_movimento, data_mov, importo, modalita, cliente_libero, descrizione_libera, num_fattura) \n                VALUES (?,?,?,?,?,?,?,?)\n            \"\"\", (rep if rep else None, causale, data, importo, tag_modalita, cli_libero, desc_libera, fat_num if fat_num else None))\n            conn.commit()\n            \n        self.registro_pulisci_campi()\n        self.aggiorna_tabelle_totali()\n        messagebox.showinfo(\"Inserito\", \"Riga inserita correttamente.\")\n\n    def registro_salva_modifica(self):\n        \"\"\"Salva le modifiche ad un movimento esistente\"\"\"\n        if not self.id_movimento_selezionato_registro: return\n        data = formatta_singola_data(self.reg_data.get().strip())\n        rep = self.reg_rep.get().strip()\n        causale = self.reg_causale.get().strip().upper()\n        cli_libero = self.reg_cliente_libero.get().strip()\n        desc_libera = self.reg_desc_libera.get().strip()\n        fat_num = self.reg_num_fattura.get().strip()\n        \n        importo, tag_modalita = self.estrai_valore_e_tag_importo()\n        \n        with sqlite3.connect(DB_FILE) as conn:\n            cursor = conn.cursor()\n            cursor.execute(\"\"\"\n                UPDATE movimenti \n                SET repertorio=?, tipo_movimento=?, data_mov=?, importo=?, modalita=?, cliente_libero=?, descrizione_libera=?, num_fattura=? \n                WHERE id=?\n            \"\"\", (rep if rep else None, causale, data, importo, tag_modalita, cli_libero, desc_libera, fat_num if fat_num else None, self.id_movimento_selezionato_registro))\n            conn.commit()\n            \n        self.registro_pulisci_campi()\n        self.aggiorna_tabelle_totali()\n        messagebox.showinfo(\"Successo\", \"Movimento aggiornato nel registro flussi.\")\n\n    def registro_elimina_riga(self):\n        \"\"\"Elimina una riga dal registro movimento\"\"\"\n        if not self.id_movimento_selezionato_registro: return\n        if messagebox.askyesno(\"Conferma\", \"Vuoi cancellare definitivamente questa riga?\"):\n            with sqlite3.connect(DB_FILE) as conn:\n                cursor = conn.cursor()\n                cursor.execute(\"DELETE FROM movimenti WHERE id=?\", (self.id_movimento_selezionato_registro,))\n                conn.commit()\n            self.registro_pulisci_campi()\n            self.aggiorna_tabelle_totali()\n\n    def crea_tab_smistatore(self):\n        \"\"\"Crea la tab per lo smistamento automatico OCR\"\"\"\n        container = tk.Frame(self.tab_smistatore, padx=20, pady=20)\n        container.pack(fill=\"both\", expand=True)\n        \n        tk.Label(container, text=\"📁 Cartella SORGENTE (Origine PDF):\").grid(row=1, column=0, sticky=\"w\", pady=5)\n        tk.Entry(container, textvariable=self.path_in).grid(row=1, column=1, sticky=\"ew\", padx=10, pady=5)\n        tk.Button(container, text=\"Sfoglia...\", command=lambda: self.path_in.set(filedialog.askdirectory())).grid(row=1, column=2, pady=5)\n        \n        tk.Label(container, text=\"📁 Cartella DESTINAZIONE (Smistati):\").grid(row=2, column=0, sticky=\"w\", pady=5)\n        tk.Entry(container, textvariable=self.path_out).grid(row=2, column=1, sticky=\"ew\", padx=10, pady=5)\n        tk.Button(container, text=\"Sfoglia...\", command=lambda: self.path_out.set(filedialog.askdirectory())).grid(row=2, column=2, pady=5)\n        \n        self.lbl_ocr_status = tk.Label(container, text=\"Stato OCR: Inizializzazione...\", font=("Arial", 10, "bold\"), fg=\"orange\")\n        self.lbl_ocr_status.grid(row=3, column=0, columnspan=3, pady=10)\n        \n        self.btn_ocr = tk.Button(container, text=\"🚀 AVVIA ANALISI E INTEGRAZIONE AUTOMATICA OCR\", bg=\"#10b981\", fg=\"white\", font=(\"Arial\", 10, \"bold\"), bd=0, pady=8, command=self.avvia_ocr)\n        self.btn_ocr.grid(row=4, column=0, columnspan=3, pady=5, sticky=\"ew\")\n        \n        self.log_textbox = tk.Text(container, height=12, font=(\"Consolas\", 9), bg=\"white\")\n        self.log_textbox.grid(row=5, column=0, columnspan=3, pady=10, sticky=\"nsew\")\n        \n        container.grid_rowconfigure(5, weight=1)\n        container.grid_columnconfigure(1, weight=1)\n        threading.Thread(target=lambda: ocr_worker.inizializza_ocr_on_demand(self.log_ocr, self.status_ocr), daemon=True).start()\n\n    def log_ocr(self, msg): \n        \"\"\"Scrive nel log OCR\"\"\"\n        self.log_textbox.insert(\"end\", msg)\n        self.log_textbox.see(\"end\")\n\n    def status_ocr(self, msg, col): \n        \"\"\"Aggiorna lo stato OCR\"\"\"\n        self.lbl_ocr_status.config(text=f\"Stato OCR Engine: {msg}\", fg=col)\n    \n    def avvia_ocr(self):\n        \"\"\"Avvia l'elaborazione OCR in background\"\"\"\n        if not self.path_in.get() or not self.path_out.get(): return\n        self.btn_ocr.config(state=\"disabled\", bg=\"#cbd5e1\")\n        threading.Thread(target=lambda: [\n            ocr_worker.elabora_smistamento(self.path_in.get(), self.path_out.get(), self.log_ocr, self.status_ocr, self.aggiorna_tabelle_totali),\n            self.btn_ocr.config(state=\"normal\", bg=\"#10b981\")\n        ], daemon=True).start()\n\n    def aggiorna_tabelle_totali(self):\n        \"\"\"Aggiorna tutte le tabelle\"\"\"\n        self.aggiorna_tabella_ricerca()\n        self.carica_registro_movimenti()\n\n    def aggiorna_tabella_ricerca(self):\n        \"\"\"Aggiorna la tabella di ricerca pratiche\"\"\"\n        for item in self.tree.get_children(): self.tree.delete(item)\n        chiave = self.ent_cerca.get().strip()\n        with sqlite3.connect(DB_FILE) as conn:\n            cursor = conn.cursor()\n            if chiave:\n                cursor.execute(\"\"\"\n                    SELECT p.repertorio, p.data_atto, p.fascicolo, p.oggetto,\n                           (SELECT group_concat(nome_cliente, ', ') FROM clienti WHERE repertorio=p.repertorio) as cl\n                    FROM pratiche p WHERE p.repertorio LIKE ? OR p.oggetto LIKE ? OR cl LIKE ?\n                \"\"\", (f\"%{chiave}%\", f\"%{chiave}%\", f\"%{chiave}%\"))\n            else:\n                cursor.execute(\"SELECT repertorio, data_atto, fascicolo, oggetto FROM pratiche\")\n            for row in cursor.fetchall():\n                cursor.execute(\"SELECT nome_cliente FROM clienti WHERE repertorio=?\", (row[0],))\n                clienti_list = [c[0] for c in cursor.fetchall() if c[0]]\n                self.tree.insert(\"\", \"end\", values=(row[0], formatta_singola_data(row[1]), row[2], \", \".join(clienti_list), row[3]))\n\n    def carica_pratica_da_tabella(self):\n        \"\"\"Carica una pratica selezionata dalla tabella\"\"\"\n        sel = self.tree.selection()\n        if not sel: return\n        rep = self.tree.item(sel[0])[\"values\"][0]\n        self.carica_pratica_specifica(rep)\n\n    def carica_pratica_specifica(self, rep):\n        \"\"\"Carica i dati di una pratica specifica dal database\"\"\"\n        self.svuota_maschera_per_ricarica()\n        \n        self.list_allegati.delete(0, tk.END)\n        if os.path.exists(CARTELLA_PDF):\n            for f in os.listdir(CARTELLA_PDF):\n                if f.lower().endswith(\".pdf\") and f\"rep_{rep}\" in f.lower():\n                    self.list_allegati.insert(tk.END, f)\n\n        with sqlite3.connect(DB_FILE) as conn:\n            cursor = conn.cursor()\n            cursor.execute(\"SELECT repertorio, data_atto, fascicolo, oggetto FROM pratiche WHERE repertorio=?\", (rep,))\n            p = cursor.fetchone()\n            if not p: return\n            \n            self.ent_rep.insert(0, p[0])\n            self.ent_data_atto.insert(0, formatta_singola_data(p[1]))\n            self.ent_fascicolo.insert(0, p[2])\n            self.ent_oggetto.insert(0, p[3])\n            \n            cursor.execute(\"SELECT nome_cliente, num_fattura FROM clienti WHERE repertorio=?\", (rep,))\n            for c in cursor.fetchall():\n                riga = tk.Frame(self.f_rows_containers[\"CLIENTI\"], bg=\"#ffffff\")\n                riga.pack(fill=\"x\", pady=1)\n                tk.Label(riga, text=f\"Cliente {len(self.sezioni['CLIENTI'])+1}:\", bg=\"#ffffff\", width=9, anchor=\"w\", font=(\"Arial\", 9)).pack(side=\"left\", padx=2)\n                ent_n = tk.Entry(riga, font=(\"Arial\", 9))\n                ent_n.insert(0, c[0])\n                ent_n.pack(side=\"left\", fill=\"x\", expand=True, padx=2)\n                ent_n.bind(\"<KeyRelease>\", lambda e: self.aggiorna_dropdown_clienti())\n                \n                tk.Label(riga, text=\"Fattura N° Collegata:\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=2)\n                ent_f = tk.Entry(riga, width=12, font=(\"Arial\", 9))\n                ent_f.insert(0, c[1] if c[1] else \"\")\n                ent_f.pack(side=\"left\", padx=2)\n                self.sezioni[\"CLIENTI\"].append((ent_n, ent_f, riga))\n                \n            for tipo in [\"INCASSO\", \"VERSAMENTO\", \"GIROCONTO\", \"IMPOSTA\"]:\n                cursor.execute(\"SELECT data_mov, importo, modalita, num_fattura FROM movimenti WHERE repertorio=? AND tipo_movimento=? AND cliente_libero IS NULL\", (rep, tipo))\n                ha_mod = tipo in [\"INCASSO\", \"IMPOSTA\"]\n                for m in cursor.fetchall():\n                    riga = tk.Frame(self.f_rows_containers[tipo], bg=\"#ffffff\")\n                    riga.pack(fill=\"x\", pady=1)\n                    tk.Label(riga, text=\"Data:\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=2)\n                    ent_d = tk.Entry(riga, width=12, font=(\"Arial\", 9))\n                    ent_d.insert(0, formatta_singola_data(m[0]))\n                    ent_d.pack(side=\"left\", padx=2)\n                    ent_d.bind(\"<FocusOut>\", self.on_date_field_leave)\n                    \n                    tk.Label(riga, text=\"Importo (€):\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=10)\n                    ent_i = tk.Entry(riga, width=12, font=(\"Arial\", 9))\n                    ent_i.insert(0, str(m[1]))\n                    ent_i.pack(side=\"left\", padx=2)\n                    cmb_m = None\n                    if ha_mod:\n                        tk.Label(riga, text=\"Modalità / Note:\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=10)\n                        if tipo == \"IMPOSTA\":\n                            cmb_m = ttk.Combobox(riga, values=[\"F24\", \"F24 APPROVATO\", \"ESENTE\", \"ALTRO\"], width=15, font=(\"Arial\", 9))\n                        else:\n                            cmb_m = ttk.Combobox(riga, values=OPZIONI_PAGAMENTO, width=12, font=(\"Arial\", 9))\n                        cmb_m.set(m[2] if m[2] is not None else \"\")\n                        cmb_m.pack(side=\"left\", padx=2)\n                    self.sezioni[tipo].append((ent_d, ent_i, cmb_m, riga))\n            \n            clienti_attuali = self.ottieni_lista_clienti_inseriti()\n            cursor.execute(\"SELECT num_fattura, data_fattura, importo, nome_cliente FROM fatture_studio WHERE repertorio=?\", (rep,))\n            for f in cursor.fetchall():\n                riga = tk.Frame(self.f_rows_containers[\"FATTURA\"], bg=\"#ffffff\")\n                riga.pack(fill=\"x\", pady=1)\n                tk.Label(riga, text=\"Fattura N°:\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=2)\n                ent_num = tk.Entry(riga, width=10, font=(\"Arial\", 9))\n                ent_num.insert(0, f[0])\n                ent_num.pack(side=\"left\", padx=2)\n                tk.Label(riga, text=\"Data Emi:\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=10)\n                ent_dat = tk.Entry(riga, width=12, font=(\"Arial\", 9))\n                ent_dat.insert(0, formatta_singola_data(f[1]))\n                ent_dat.pack(side=\"left\", padx=2)\n                ent_dat.bind(\"<FocusOut>\", self.on_date_field_leave)\n                \n                tk.Label(riga, text=\"Importo (€):\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=10)\n                ent_imp = tk.Entry(riga, width=12, font=(\"Arial\", 9))\n                ent_imp.insert(0, str(f[2]))\n                ent_imp.pack(side=\"left\", padx=2)\n                \n                tk.Label(riga, text=\"Seleziona Cliente:\", bg=\"#ffffff\", font=(\"Arial\", 9)).pack(side=\"left\", padx=10)\n                cmb_cli = ttk.Combobox(riga, values=clienti_attuali, font=(\"Arial\", 9))\n                cmb_cli.set(f[3] if f[3] else \"\")\n                cmb_cli.pack(side=\"left\", fill=\"x\", expand=True, padx=2)\n                \n                self.sezioni[\"FATTURA\"].append((ent_num, ent_dat, ent_imp, cmb_cli, riga))\n\n        self.garantisci_righe_minime()\n        self.aggiorna_dropdown_clienti()\n        self.notebook.select(self.tab_inserimento)\n\n    def salva_dati(self):\n        \"\"\"Salva i dati della pratica nel database e genera PDF\"\"\"\n        rep = self.ent_rep.get().strip()\n        if not rep:\n            messagebox.showerror(\"Errore\", \"Il campo Repertorio è obbligatorio!\")\n            return\n            \n        data_atto = formatta_singola_data(self.ent_data_atto.get().strip())\n        fascicolo = self.ent_fascicolo.get().strip()\n        oggetto = self.ent_oggetto.get().strip()\n        \n        try:\n            with sqlite3.connect(DB_FILE) as conn:\n                cursor = conn.cursor()\n                cursor.execute(\"INSERT OR REPLACE INTO pratiche (repertorio, data_atto, fascicolo, oggetto) VALUES (?,?,?,?)\", (rep, data_atto, fascicolo, oggetto))\n                \n                cursor.execute(\"DELETE FROM clienti WHERE repertorio=?\", (rep,))\n                clienti_nomi = []\n                for ent_n, ent_f, _ in self.sezioni[\"CLIENTI\"]:\n                    n = ent_n.get().strip()\n                    f = ent_f.get().strip()\n                    if n:\n                        cursor.execute(\"INSERT INTO clienti (repertorio, nome_cliente, num_fattura) VALUES (?,?,?)\", (rep, n, f if f else None))\n                        clienti_nomi.append(n)\n                \n                cursor.execute(\"DELETE FROM movimenti WHERE repertorio=? AND cliente_libero IS NULL\", (rep,))\n                dati_campi = {}\n                for tipo in [\"INCASSO\", \"VERSAMENTO\", \"GIROCONTO\", \"IMPOSTA\"]:\n                    dates, imps, mods = [], [], []\n                    for ent_d, ent_i, cmb_m, _ in self.sezioni[tipo]:\n                        d = formatta_singola_data(ent_d.get().strip())\n                        i = formatta_singolo_importo(ent_i.get().strip())\n                        m = cmb_m.get().strip().upper() if cmb_m else \"\"\n                        if d or i > 0:\n                            cursor.execute(\"INSERT INTO movimenti (repertorio, tipo_movimento, data_mov, importo, modalita) VALUES (?,?,?,?,?)\", (rep, tipo, d, i, m))\n                            dates.append(d); imps.append(str(i)); mods.append(m)\n                    dati_campi[f\"{tipo}: Data\"] = \"|\".join(dates)\n                    dati_campi[f\"{tipo}: Importo\"] = \"|\".join(imps)\n                    dati_campi[f\"{tipo}: Modalità\"] = \"|\".join(mods)\n                    \n                cursor.execute(\"DELETE FROM fatture_studio WHERE repertorio=?\", (rep,))\n                f_nums, f_dates, f_imps, f_clis = [], [], [] , []\n                for ent_num, ent_dat, ent_imp, cmb_cli, _ in self.sezioni[\"FATTURA\"]:\n                    num = ent_num.get().strip()\n                    dat = formatta_singola_data(ent_dat.get().strip())\n                    imp = formatta_singolo_importo(ent_imp.get().strip())\n                    cli = cmb_cli.get().strip()\n                    \n                    if num or dat or imp > 0 or cli:\n                        cursor.execute(\"INSERT INTO fatture_studio (repertorio, num_fattura, data_fattura, importo, nome_cliente) VALUES (?,?,?,?,?)\", (rep, num, dat, imp, cli))\n                        f_nums.append(num); f_dates.append(dat); f_imps.append(str(imp)); f_clis.append(cli)\n                dati_campi[\"FATTURA: Numero\"] = \"|\".join(f_nums)\n                dati_campi[\"FATTURA: Data\"] = \"|\".join(f_dates)\n                dati_campi[\"FATTURA: Importo\"] = \"|\".join(f_imps)\n                dati_campi[\"FATTURA: Cliente\"] = \"|\".join(f_clis)\n                conn.commit()\n                \n            try:\n                genera_pdf_pratica(rep, data_atto, fascicolo, \", \".join(clienti_nomi), oggetto, dati_campi)\n                messagebox.showinfo(\"Successo\", f\"Pratica Rep. {rep} salvata.\")\n            except Exception as e:\n                messagebox.showerror(\"Errore PDF\", f\"Errore scrittura PDF: {e}\")\n                \n            self.aggiorna_tabelle_totali()\n            \n        except Exception as e:\n            messagebox.showerror(\"Errore Database\", f\"Impossibile salvare i dati: {e}\")\n\n    def elimina_pratica_corrente(self):\n        \"\"\"Elimina la pratica corrente e tutti i dati associati\"\"\"\n        rep = self.ent_rep.get().strip()\n        if not rep: return\n        if messagebox.askyesno(\"Conferma\", f\"Vuoi eliminare la pratica Rep. {rep}?\"):\n            try:\n                with sqlite3.connect(DB_FILE) as conn:\n                    cursor = conn.cursor()\n                    cursor.execute(\"DELETE FROM pratiche WHERE repertorio=?\", (rep,))\n                    cursor.execute(\"DELETE FROM clienti WHERE repertorio=?\", (rep,))\n                    cursor.execute(\"DELETE FROM movimenti WHERE repertorio=?\", (rep,))\n                    cursor.execute(\"DELETE FROM fatture_studio WHERE repertorio=?\", (rep,))\n                    conn.commit()\n                messagebox.showinfo(\"Eliminato\", f\"Pratica Rep. {rep} rimossa.\")\n                self.svuota_maschera()\n                self.aggiorna_tabelle_totali()\n            except Exception as e:\n                messagebox.showerror(\"Errore\", f\"Impossibile eliminare: {e}\")\n\n    def svuota_maschera_per_ricarica(self):\n        \"\"\"Svuota la maschera prima di ricaricare dati - CLEANUP MIGLIORATO\"\"\"\n        self.ent_rep.delete(0, tk.END)\n        self.ent_data_atto.delete(0, tk.END)\n        self.ent_fascicolo.delete(0, tk.END)\n        self.ent_oggetto.delete(0, tk.END)\n        self.list_allegati.delete(0, tk.END)\n        \n        # Cleanup approfondito dei widget\n        for key in self.sezioni.keys():\n            if key in self.f_rows_containers:\n                for widget in self.f_rows_containers[key].winfo_children():\n                    widget.destroy()\n            self.sezioni[key].clear()\n\n    def garantisci_righe_minime(self):\n        \"\"\"Garantisce che ci sia almeno una riga per ogni sezione\"\"\"\n        if not self.sezioni[\"CLIENTI\"]: self.aggiungi_riga_cliente(self.f_rows_containers[\"CLIENTI\"])\n        if not self.sezioni[\"INCASSO\"]: self.aggiungi_riga_movimento(self.f_rows_containers[\"INCASSO\"], \"INCASSO\", ha_modalita=True)\n        if not self.sezioni[\"VERSAMENTO\"]: self.aggiungi_riga_movimento(self.f_rows_containers[\"VERSAMENTO\"], \"VERSAMENTO\", ha_modalita=False)\n        if not self.sezioni[\"GIROCONTO\"]: self.aggiungi_riga_movimento(self.f_rows_containers[\"GIROCONTO\"], \"GIROCONTO\", ha_modalita=False)\n        if not self.sezioni[\"IMPOSTA\"]: self.aggiungi_riga_movimento(self.f_rows_containers[\"IMPOSTA\"], \"IMPOSTA\", ha_modalita=True)\n        if not self.sezioni[\"FATTURA\"]: self.aggiungi_riga_fattura(self.f_rows_containers[\"FATTURA\"])\n\n    def svuota_maschera(self):\n        \"\"\"Svuota e reinizializza la maschera\"\"\"\n        self.svuota_maschera_per_ricarica()\n        self.garantisci_righe_minime()\n        self.aggiorna_dropdown_clienti()\n\nif __name__ == \"__main__\":\n    app = AppNotarile()\n    app.mainloop()\n", "path": "main.py"}
+            cursor.execute("""SELECT m.id, m.data_mov, m.tipo_movimento, m.repertorio, m.importo, m.modalita,
+                       m.cliente_libero, m.descrizione_libera, m.num_fattura,
+                       (SELECT group_concat(nome_cliente, ', ') FROM clienti WHERE repertorio=m.repertorio) as cl_rep,
+                       p.oggetto FROM movimenti m
+                LEFT JOIN pratiche p ON m.repertorio = p.repertorio
+                ORDER BY m.id DESC""")
+            
+            for row in cursor.fetchall():
+                mid, data, causale, rep, importo, modalita, cl_libero, desc_libera, fat_num, cl_rep, ogg_rep = row
+                
+                mostra_cliente = cl_libero if cl_libero else (cl_rep if cl_rep else "-")
+                mostra_desc = desc_libera if desc_libera else (f"{ogg_rep} ({modalita})" if ogg_rep else f"Movimento ({modalita})")
+                mostra_fattura = fat_num if fat_num else "-"
+                
+                cassa, banca_ord, banca_ded = "", "", ""
+                data_formattata = formatta_singola_data(data)
+                
+                if "CASSA:" in str(modalita):
+                    cassa = mostra_euro(importo)
+                elif "B_DED:" in str(modalita):
+                    banca_ded = mostra_euro(importo)
+                elif "B_ORD:" in str(modalita):
+                    banca_ord = mostra_euro(importo)
+                else:
+                    if str(modalita).upper() == "CONTANTI": cassa = mostra_euro(importo)
+                    elif str(causale).upper() == "VERSAMENTO": banca_ded = mostra_euro(importo)
+                    else: banca_ord = mostra_euro(importo)
+                    
+                self.tree_movimenti.insert("", "end", values=(
+                    mid, data_formattata, mostra_cliente, causale, mostra_fattura, mostra_desc,
+                    rep if rep else "-", cassa, banca_ord, banca_ded))
+
+    def on_registro_select_row(self, event):
+        """Gestisce la selezione di una riga nel registro"""
+        sel = self.tree_movimenti.selection()
+        if not sel: return
+        valori = self.tree_movimenti.item(sel[0])["values"]
+        
+        self.id_movimento_selezionato_registro = valori[0]
+        
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT data_mov, tipo_movimento, importo, repertorio, modalita, cliente_libero, descrizione_libera, num_fattura FROM movimenti WHERE id=?", (self.id_movimento_selezionato_registro,))
+            res = c.fetchone()
+            if res:
+                self.reg_data.delete(0, tk.END)
+                self.reg_data.insert(0, formatta_singola_data(res[0]))
+                self.reg_causale.set(res[1])
+                
+                self.reg_rep.delete(0, tk.END)
+                self.reg_rep.insert(0, res[3] if res[3] else "")
+                
+                self.reg_cliente_libero.set(res[5] if res[5] else "")
+                
+                self.reg_desc_libera.delete(0, tk.END)
+                self.reg_desc_libera.insert(0, res[6] if res[6] else "")
+                
+                self.reg_num_fattura.delete(0, tk.END)
+                self.reg_num_fattura.insert(0, res[7] if res[7] else "")
+
+                self.reg_imp_cassa.delete(0, tk.END)
+                self.reg_imp_banca_ord.delete(0, tk.END)
+                self.reg_imp_banca_ded.delete(0, tk.END)
+                
+                mod_tag = str(res[4])
+                if "CASSA:" in mod_tag:
+                    self.reg_imp_cassa.insert(0, str(res[2]))
+                    self.reg_modalita.set(mod_tag.replace("CASSA:", ""))
+                elif "B_DED:" in mod_tag:
+                    self.reg_imp_banca_ded.insert(0, str(res[2]))
+                    self.reg_modalita.set(mod_tag.replace("B_DED:", ""))
+                elif "B_ORD:" in mod_tag:
+                    self.reg_imp_banca_ord.insert(0, str(res[2]))
+                    self.reg_modalita.set(mod_tag.replace("B_ORD:", ""))
+                else:
+                    self.reg_imp_banca_ord.insert(0, str(res[2]))
+                    self.reg_modalita.set(mod_tag)
+
+        self.btn_mod_mov.config(state="normal")
+        self.btn_del_mov.config(state="normal")
+
+    def registro_pulisci_campi(self):
+        """Pulisce i campi del registro movimento"""
+        self.id_movimento_selezionato_registro = None
+        self.reg_data.delete(0, tk.END)
+        self.reg_rep.delete(0, tk.END)
+        self.reg_imp_cassa.delete(0, tk.END)
+        self.reg_imp_banca_ord.delete(0, tk.END)
+        self.reg_imp_banca_ded.delete(0, tk.END)
+        self.reg_num_fattura.delete(0, tk.END)
+        self.reg_cliente_libero.set("")
+        self.reg_desc_libera.delete(0, tk.END)
+        self.reg_causale.set("INCASSO")
+        self.reg_modalita.set("BONIFICO")
+        self.btn_mod_mov.config(state="disabled")
+        self.btn_del_mov.config(state="disabled")
+
+    def estrai_valore_e_tag_importo(self):
+        """Estrae il valore importo e il tag corrispondente"""
+        v_cassa = formatta_singolo_importo(self.reg_imp_cassa.get().strip())
+        v_ord = formatta_singolo_importo(self.reg_imp_banca_ord.get().strip())
+        v_ded = formatta_singolo_importo(self.reg_imp_banca_ded.get().strip())
+        base_mod = self.reg_modalita.get().strip().upper()
+        
+        if v_cassa > 0: return v_cassa, f"CASSA:{base_mod}"
+        if v_ded > 0: return v_ded, f"B_DED:{base_mod}"
+        return v_ord, f"B_ORD:{base_mod}"
+
+    def registro_inserisci_nuovo(self):
+        """Inserisce un nuovo movimento nel registro"""
+        data = formatta_singola_data(self.reg_data.get().strip())
+        rep = self.reg_rep.get().strip()
+        causale = self.reg_causale.get().strip().upper()
+        cli_libero = self.reg_cliente_libero.get().strip()
+        desc_libera = self.reg_desc_libera.get().strip()
+        fat_num = self.reg_num_fattura.get().strip()
+        
+        importo, tag_modalita = self.estrai_valore_e_tag_importo()
+        
+        if not data or importo <= 0:
+            messagebox.showerror("Errore", "Inserire la Data e almeno un Importo valido!")
+            return
+            
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""INSERT INTO movimenti (repertorio, tipo_movimento, data_mov, importo, modalita, cliente_libero, descrizione_libera, num_fattura) 
+                VALUES (?,?,?,?,?,?,?,?)""", (rep if rep else None, causale, data, importo, tag_modalita, cli_libero, desc_libera, fat_num if fat_num else None))
+            conn.commit()
+            
+        self.registro_pulisci_campi()
+        self.aggiorna_tabelle_totali()
+        messagebox.showinfo("Inserito", "Riga inserita correttamente.")
+
+    def registro_salva_modifica(self):
+        """Salva le modifiche ad un movimento esistente"""
+        if not self.id_movimento_selezionato_registro: return
+        data = formatta_singola_data(self.reg_data.get().strip())
+        rep = self.reg_rep.get().strip()
+        causale = self.reg_causale.get().strip().upper()
+        cli_libero = self.reg_cliente_libero.get().strip()
+        desc_libera = self.reg_desc_libera.get().strip()
+        fat_num = self.reg_num_fattura.get().strip()
+        
+        importo, tag_modalita = self.estrai_valore_e_tag_importo()
+        
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""UPDATE movimenti 
+                SET repertorio=?, tipo_movimento=?, data_mov=?, importo=?, modalita=?, cliente_libero=?, descrizione_libera=?, num_fattura=? 
+                WHERE id=?""", (rep if rep else None, causale, data, importo, tag_modalita, cli_libero, desc_libera, fat_num if fat_num else None, self.id_movimento_selezionato_registro))
+            conn.commit()
+            
+        self.registro_pulisci_campi()
+        self.aggiorna_tabelle_totali()
+        messagebox.showinfo("Successo", "Movimento aggiornato nel registro flussi.")
+
+    def registro_elimina_riga(self):
+        """Elimina una riga dal registro movimento"""
+        if not self.id_movimento_selezionato_registro: return
+        if messagebox.askyesno("Conferma", "Vuoi cancellare definitivamente questa riga?"):
+            with sqlite3.connect(DB_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM movimenti WHERE id=?", (self.id_movimento_selezionato_registro,))
+                conn.commit()
+            self.registro_pulisci_campi()
+            self.aggiorna_tabelle_totali()
+
+    def crea_tab_smistatore(self):
+        """Crea la tab per lo smistamento automatico OCR"""
+        container = tk.Frame(self.tab_smistatore, padx=20, pady=20)
+        container.pack(fill="both", expand=True)
+        
+        tk.Label(container, text="📁 Cartella SORGENTE (Origine PDF):").grid(row=1, column=0, sticky="w", pady=5)
+        tk.Entry(container, textvariable=self.path_in).grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+        tk.Button(container, text="Sfoglia...", command=lambda: self.path_in.set(filedialog.askdirectory())).grid(row=1, column=2, pady=5)
+        
+        tk.Label(container, text="📁 Cartella DESTINAZIONE (Smistati):").grid(row=2, column=0, sticky="w", pady=5)
+        tk.Entry(container, textvariable=self.path_out).grid(row=2, column=1, sticky="ew", padx=10, pady=5)
+        tk.Button(container, text="Sfoglia...", command=lambda: self.path_out.set(filedialog.askdirectory())).grid(row=2, column=2, pady=5)
+        
+        self.lbl_ocr_status = tk.Label(container, text="Stato OCR: Inizializzazione...", font=("Arial", 10, "bold"), fg="orange")
+        self.lbl_ocr_status.grid(row=3, column=0, columnspan=3, pady=10)
+        
+        self.btn_ocr = tk.Button(container, text="🚀 AVVIA ANALISI E INTEGRAZIONE AUTOMATICA OCR", bg="#10b981", fg="white", font=("Arial", 10, "bold"), bd=0, pady=8, command=self.avvia_ocr)
+        self.btn_ocr.grid(row=4, column=0, columnspan=3, pady=5, sticky="ew")
+        
+        self.log_textbox = tk.Text(container, height=12, font=("Consolas", 9), bg="white")
+        self.log_textbox.grid(row=5, column=0, columnspan=3, pady=10, sticky="nsew")
+        
+        container.grid_rowconfigure(5, weight=1)
+        container.grid_columnconfigure(1, weight=1)
+        threading.Thread(target=lambda: ocr_worker.inizializza_ocr_on_demand(self.log_ocr, self.status_ocr), daemon=True).start()
+
+    def log_ocr(self, msg): 
+        """Scrive nel log OCR"""
+        self.log_textbox.insert("end", msg)
+        self.log_textbox.see("end")
+
+    def status_ocr(self, msg, col): 
+        """Aggiorna lo stato OCR"""
+        self.lbl_ocr_status.config(text=f"Stato OCR Engine: {msg}", fg=col)
+    
+    def avvia_ocr(self):
+        """Avvia l'elaborazione OCR in background"""
+        if not self.path_in.get() or not self.path_out.get(): return
+        self.btn_ocr.config(state="disabled", bg="#cbd5e1")
+        threading.Thread(target=lambda: [
+            ocr_worker.elabora_smistamento(self.path_in.get(), self.path_out.get(), self.log_ocr, self.status_ocr, self.aggiorna_tabelle_totali),
+            self.btn_ocr.config(state="normal", bg="#10b981")
+        ], daemon=True).start()
+
+    def aggiorna_tabelle_totali(self):
+        """Aggiorna tutte le tabelle"""
+        self.aggiorna_tabella_ricerca()
+        self.carica_registro_movimenti()
+
+    def aggiorna_tabella_ricerca(self):
+        """Aggiorna la tabella di ricerca pratiche"""
+        for item in self.tree.get_children(): self.tree.delete(item)
+        chiave = self.ent_cerca.get().strip()
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            if chiave:
+                cursor.execute("""SELECT p.repertorio, p.data_atto, p.fascicolo, p.oggetto,
+                           (SELECT group_concat(nome_cliente, ', ') FROM clienti WHERE repertorio=p.repertorio) as cl
+                    FROM pratiche p WHERE p.repertorio LIKE ? OR p.oggetto LIKE ? OR cl LIKE ?""", (f"%{chiave}%", f"%{chiave}%", f"%{chiave}%"))
+            else:
+                cursor.execute("SELECT repertorio, data_atto, fascicolo, oggetto FROM pratiche")
+            for row in cursor.fetchall():
+                cursor.execute("SELECT nome_cliente FROM clienti WHERE repertorio=?", (row[0],))
+                clienti_list = [c[0] for c in cursor.fetchall() if c[0]]
+                self.tree.insert("", "end", values=(row[0], formatta_singola_data(row[1]), row[2], ", ".join(clienti_list), row[3]))
+
+    def carica_pratica_da_tabella(self):
+        """Carica una pratica selezionata dalla tabella"""
+        sel = self.tree.selection()
+        if not sel: return
+        rep = self.tree.item(sel[0])["values"][0]
+        self.carica_pratica_specifica(rep)
+
+    def carica_pratica_specifica(self, rep):
+        """Carica i dati di una pratica specifica dal database"""
+        self.svuota_maschera_per_ricarica()
+        
+        self.list_allegati.delete(0, tk.END)
+        if os.path.exists(CARTELLA_PDF):
+            for f in os.listdir(CARTELLA_PDF):
+                if f.lower().endswith(".pdf") and f"rep_{rep}" in f.lower():
+                    self.list_allegati.insert(tk.END, f)
+
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT repertorio, data_atto, fascicolo, oggetto FROM pratiche WHERE repertorio=?", (rep,))
+            p = cursor.fetchone()
+            if not p: return
+            
+            self.ent_rep.insert(0, p[0])
+            self.ent_data_atto.insert(0, formatta_singola_data(p[1]))
+            self.ent_fascicolo.insert(0, p[2])
+            self.ent_oggetto.insert(0, p[3])
+            
+            cursor.execute("SELECT nome_cliente, num_fattura FROM clienti WHERE repertorio=?", (rep,))
+            for c in cursor.fetchall():
+                riga = tk.Frame(self.f_rows_containers["CLIENTI"], bg="#ffffff")
+                riga.pack(fill="x", pady=1)
+                tk.Label(riga, text=f"Cliente {len(self.sezioni['CLIENTI'])+1}:", bg="#ffffff", width=9, anchor="w", font=("Arial", 9)).pack(side="left", padx=2)
+                ent_n = tk.Entry(riga, font=("Arial", 9))
+                ent_n.insert(0, c[0])
+                ent_n.pack(side="left", fill="x", expand=True, padx=2)
+                ent_n.bind("<KeyRelease>", lambda e: self.aggiorna_dropdown_clienti())
+                
+                tk.Label(riga, text="Fattura N° Collegata:", bg="#ffffff", font=("Arial", 9)).pack(side="left", padx=2)
+                ent_f = tk.Entry(riga, width=12, font=("Arial", 9))
+                ent_f.insert(0, c[1] if c[1] else "")
+                ent_f.pack(side="left", padx=2)
+                self.sezioni["CLIENTI"].append((ent_n, ent_f, riga))
+                
+            for tipo in ["INCASSO", "VERSAMENTO", "GIROCONTO", "IMPOSTA"]:
+                cursor.execute("SELECT data_mov, importo, modalita, num_fattura FROM movimenti WHERE repertorio=? AND tipo_movimento=? AND cliente_libero IS NULL", (rep, tipo))
+                ha_mod = tipo in ["INCASSO", "IMPOSTA"]
+                for m in cursor.fetchall():
+                    riga = tk.Frame(self.f_rows_containers[tipo], bg="#ffffff")
+                    riga.pack(fill="x", pady=1)
+                    tk.Label(riga, text="Data:", bg="#ffffff", font=("Arial", 9)).pack(side="left", padx=2)
+                    ent_d = tk.Entry(riga, width=12, font=("Arial", 9))
+                    ent_d.insert(0, formatta_singola_data(m[0]))
+                    ent_d.pack(side="left", padx=2)
+                    ent_d.bind("<FocusOut>", self.on_date_field_leave)
+                    
+                    tk.Label(riga, text="Importo (€):", bg="#ffffff", font=("Arial", 9)).pack(side="left", padx=10)
+                    ent_i = tk.Entry(riga, width=12, font=("Arial", 9))
+                    ent_i.insert(0, str(m[1]))
+                    ent_i.pack(side="left", padx=2)
+                    cmb_m = None
+                    if ha_mod:
+                        tk.Label(riga, text="Modalità / Note:", bg="#ffffff", font=("Arial", 9)).pack(side="left", padx=10)
+                        if tipo == "IMPOSTA":
+                            cmb_m = ttk.Combobox(riga, values=["F24", "F24 APPROVATO", "ESENTE", "ALTRO"], width=15, font=("Arial", 9))
+                        else:
+                            cmb_m = ttk.Combobox(riga, values=OPZIONI_PAGAMENTO, width=12, font=("Arial", 9))
+                        cmb_m.set(m[2] if m[2] is not None else "")
+                        cmb_m.pack(side="left", padx=2)
+                    self.sezioni[tipo].append((ent_d, ent_i, cmb_m, riga))
+            
+            self.garantisci_righe_minime()
+            self.aggiorna_dropdown_clienti()
+            self.notebook.select(self.tab_inserimento)
+
+    def salva_dati(self):
+        """Salva i dati della pratica nel database e genera PDF"""
+        rep = self.ent_rep.get().strip()
+        if not rep:
+            messagebox.showerror("Errore", "Il campo Repertorio è obbligatorio!")
+            return
+            
+        data_atto = formatta_singola_data(self.ent_data_atto.get().strip())
+        fascicolo = self.ent_fascicolo.get().strip()
+        oggetto = self.ent_oggetto.get().strip()
+        
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR REPLACE INTO pratiche (repertorio, data_atto, fascicolo, oggetto) VALUES (?,?,?,?)", (rep, data_atto, fascicolo, oggetto))
+                
+                cursor.execute("DELETE FROM clienti WHERE repertorio=?", (rep,))
+                clienti_nomi = []
+                for ent_n, ent_f, _ in self.sezioni["CLIENTI"]:
+                    n = ent_n.get().strip()
+                    f = ent_f.get().strip()
+                    if n:
+                        cursor.execute("INSERT INTO clienti (repertorio, nome_cliente, num_fattura) VALUES (?,?,?)", (rep, n, f if f else None))
+                        clienti_nomi.append(n)
+                
+                cursor.execute("DELETE FROM movimenti WHERE repertorio=? AND cliente_libero IS NULL", (rep,))
+                for tipo in ["INCASSO", "VERSAMENTO", "GIROCONTO", "IMPOSTA"]:
+                    for ent_d, ent_i, cmb_m, _ in self.sezioni[tipo]:
+                        d = formatta_singola_data(ent_d.get().strip())
+                        i = formatta_singolo_importo(ent_i.get().strip())
+                        m = cmb_m.get().strip().upper() if cmb_m else ""
+                        if d or i > 0:
+                            cursor.execute("INSERT INTO movimenti (repertorio, tipo_movimento, data_mov, importo, modalita) VALUES (?,?,?,?,?)", (rep, tipo, d, i, m))
+                    
+                cursor.execute("DELETE FROM fatture_studio WHERE repertorio=?", (rep,))
+                for ent_num, ent_dat, ent_imp, cmb_cli, _ in self.sezioni["FATTURA"]:
+                    num = ent_num.get().strip()
+                    dat = formatta_singola_data(ent_dat.get().strip())
+                    imp = formatta_singolo_importo(ent_imp.get().strip())
+                    cli = cmb_cli.get().strip()
+                    
+                    if num or dat or imp > 0 or cli:
+                        cursor.execute("INSERT INTO fatture_studio (repertorio, num_fattura, data_fattura, importo, nome_cliente) VALUES (?,?,?,?,?)", (rep, num, dat, imp, cli))
+                
+                conn.commit()
+                
+            genera_pdf_pratica(rep, data_atto, fascicolo, ", ".join(clienti_nomi), oggetto)
+            messagebox.showinfo("Successo", f"Pratica Rep. {rep} salvata.")
+            self.aggiorna_tabelle_totali()
+            
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile salvare i dati: {e}")
+
+    def elimina_pratica_corrente(self):
+        """Elimina la pratica corrente e tutti i dati associati"""
+        rep = self.ent_rep.get().strip()
+        if not rep: return
+        if messagebox.askyesno("Conferma", f"Vuoi eliminare la pratica Rep. {rep}?"):
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM pratiche WHERE repertorio=?", (rep,))
+                    cursor.execute("DELETE FROM clienti WHERE repertorio=?", (rep,))
+                    cursor.execute("DELETE FROM movimenti WHERE repertorio=?", (rep,))
+                    cursor.execute("DELETE FROM fatture_studio WHERE repertorio=?", (rep,))
+                    conn.commit()
+                messagebox.showinfo("Eliminato", f"Pratica Rep. {rep} rimossa.")
+                self.svuota_maschera()
+                self.aggiorna_tabelle_totali()
+            except Exception as e:
+                messagebox.showerror("Errore", f"Impossibile eliminare: {e}")
+
+    def svuota_maschera_per_ricarica(self):
+        """Svuota la maschera prima di ricaricare dati - CLEANUP MIGLIORATO"""
+        self.ent_rep.delete(0, tk.END)
+        self.ent_data_atto.delete(0, tk.END)
+        self.ent_fascicolo.delete(0, tk.END)
+        self.ent_oggetto.delete(0, tk.END)
+        self.list_allegati.delete(0, tk.END)
+        
+        for key in self.sezioni.keys():
+            if key in self.f_rows_containers:
+                for widget in self.f_rows_containers[key].winfo_children():
+                    widget.destroy()
+            self.sezioni[key].clear()
+
+    def garantisci_righe_minime(self):
+        """Garantisce che ci sia almeno una riga per ogni sezione"""
+        if not self.sezioni["CLIENTI"]: self.aggiungi_riga_cliente(self.f_rows_containers["CLIENTI"])
+        if not self.sezioni["INCASSO"]: self.aggiungi_riga_movimento(self.f_rows_containers["INCASSO"], "INCASSO", ha_modalita=True)
+        if not self.sezioni["VERSAMENTO"]: self.aggiungi_riga_movimento(self.f_rows_containers["VERSAMENTO"], "VERSAMENTO", ha_modalita=False)
+        if not self.sezioni["GIROCONTO"]: self.aggiungi_riga_movimento(self.f_rows_containers["GIROCONTO"], "GIROCONTO", ha_modalita=False)
+        if not self.sezioni["IMPOSTA"]: self.aggiungi_riga_movimento(self.f_rows_containers["IMPOSTA"], "IMPOSTA", ha_modalita=True)
+        if not self.sezioni["FATTURA"]: self.aggiungi_riga_fattura(self.f_rows_containers["FATTURA"])
+
+    def svuota_maschera(self):
+        """Svuota e reinizializza la maschera"""
+        self.svuota_maschera_per_ricarica()
+        self.garantisci_righe_minime()
+        self.aggiorna_dropdown_clienti()
+
+if __name__ == "__main__":
+    app = AppNotarile()
+    app.mainloop()
